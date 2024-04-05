@@ -49,9 +49,9 @@ GIT_INFO = None
 
 
 def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictionary
-    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze = \
+    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, set_zero = \
         Path(opt.save_dir), opt.epochs, opt.batch_size, opt.weights, opt.single_cls, opt.evolve, opt.data, opt.cfg, \
-        opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze
+        opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze, opt.set_zero
     callbacks.run('on_pretrain_routine_start')
 
     # Directories
@@ -118,12 +118,23 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
     # Freeze
     freeze = [f'model.{x}.' for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # layers to freeze
-    for k, v in model.named_parameters():
+    for layer_index, k_v in enumerate(model.named_parameters()):
+        k, v = k_v
         # v.requires_grad = True  # train all layers TODO: uncomment this line as in master
         # v.register_hook(lambda x: torch.nan_to_num(x))  # NaN to 0 (commented for erratic training results)
         if any(x in k for x in freeze):
-            LOGGER.info(f'freezing {k}')
+            LOGGER.info(f'freezing {layer_index} {k}')
             v.requires_grad = False
+
+    # Reset parameters (set zero)
+    freeze = [f'model.{x}.' for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # layers to freeze
+    for layer_index, k_v in enumerate(model.named_parameters()):
+        k, v = k_v
+        # v.requires_grad = True  # train all layers TODO: uncomment this line as in master
+        # v.register_hook(lambda x: torch.nan_to_num(x))  # NaN to 0 (commented for erratic training results)
+        if any(x in k for x in freeze):
+            LOGGER.info(f'Reset parameters (set zero): {layer_index} {k}')
+            v.reset_parameters()
 
     # Image size
     gs = max(int(model.stride.max()), 32)  # grid size (max stride)
@@ -464,6 +475,7 @@ def parse_opt(known=False):
     parser.add_argument('--label-smoothing', type=float, default=0.0, help='Label smoothing epsilon')
     parser.add_argument('--patience', type=int, default=100, help='EarlyStopping patience (epochs without improvement)')
     parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone=10, first3=0 1 2')
+    parser.add_argument('--set-zero', nargs='+', type=int, default=[0], help='Set zero parameters on layers: backbone=10, first3=0 1 2')
     parser.add_argument('--save-period', type=int, default=-1, help='Save checkpoint every x epochs (disabled if < 1)')
     parser.add_argument('--seed', type=int, default=0, help='Global training seed')
     parser.add_argument('--local_rank', type=int, default=-1, help='Automatic DDP Multi-GPU argument, do not modify')
