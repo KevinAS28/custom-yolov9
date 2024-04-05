@@ -42,6 +42,8 @@ from utils.plots import plot_evolve
 from utils.torch_utils import (EarlyStopping, ModelEMA, de_parallel, select_device, smart_DDP,
                                smart_optimizer, smart_resume, torch_distributed_zero_first)
 
+from utils.backup import RawBackup
+
 LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))  # https://pytorch.org/docs/stable/elastic/run.html
 RANK = int(os.getenv('RANK', -1))
 WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))
@@ -49,9 +51,10 @@ GIT_INFO = None
 
 
 def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictionary
-    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, set_zero = \
+    save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, set_zero, backup_dir = \
         Path(opt.save_dir), opt.epochs, opt.batch_size, opt.weights, opt.single_cls, opt.evolve, opt.data, opt.cfg, \
-        opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze, opt.set_zero
+        opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze, opt.set_zero, opt.backup_dir
+    print('save dir:', save_dir)
     callbacks.run('on_pretrain_routine_start')
 
     # Directories
@@ -127,14 +130,16 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             v.requires_grad = False
 
     # Reset parameters (set zero)
-    freeze = [f'model.{x}.' for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # layers to freeze
+    set_zero = [f'model.{x}.' for x in (set_zero if len(set_zero) > 1 else range(set_zero[0]))]  # layers to freeze
     for layer_index, k_v in enumerate(model.named_parameters()):
         k, v = k_v
-        # v.requires_grad = True  # train all layers TODO: uncomment this line as in master
-        # v.register_hook(lambda x: torch.nan_to_num(x))  # NaN to 0 (commented for erratic training results)
-        if any(x in k for x in freeze):
+        if any(x in k for x in set_zero):
             LOGGER.info(f'Reset parameters (set zero): {layer_index} {k}')
             v.reset_parameters()
+    
+    # Backup mechanism
+    backup_driver = RawBackup(backup_dir, max_backup_count=2)
+    LOGGER.info(f'Backup mechanism: {str(backup_driver)}')
 
     # Image size
     gs = max(int(model.stride.max()), 32)  # grid size (max stride)
@@ -394,6 +399,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                     torch.save(ckpt, w / f'epoch{epoch}.pt')
                 del ckpt
                 callbacks.run('on_model_save', last, epoch, final_epoch, best_fitness, fi)
+                backup_driver.backup(dirs_backup=[save_dir])
 
         # EarlyStopping
         if RANK != -1:  # if DDP training
@@ -475,7 +481,7 @@ def parse_opt(known=False):
     parser.add_argument('--label-smoothing', type=float, default=0.0, help='Label smoothing epsilon')
     parser.add_argument('--patience', type=int, default=100, help='EarlyStopping patience (epochs without improvement)')
     parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone=10, first3=0 1 2')
-    parser.add_argument('--set-zero', nargs='+', type=int, default=[0], help='Set zero parameters on layers: backbone=10, first3=0 1 2')
+    parser.add_argument('--set-zero', nargs='+', type=int, default=[], help='Set zero parameters on layers: backbone=10, first3=0 1 2')
     parser.add_argument('--save-period', type=int, default=-1, help='Save checkpoint every x epochs (disabled if < 1)')
     parser.add_argument('--seed', type=int, default=0, help='Global training seed')
     parser.add_argument('--local_rank', type=int, default=-1, help='Automatic DDP Multi-GPU argument, do not modify')
@@ -487,6 +493,8 @@ def parse_opt(known=False):
     parser.add_argument('--upload_dataset', nargs='?', const=True, default=False, help='Upload data, "val" option')
     parser.add_argument('--bbox_interval', type=int, default=-1, help='Set bounding-box image logging interval')
     parser.add_argument('--artifact_alias', type=str, default='latest', help='Version of dataset artifact to use')
+
+    parser.add_argument('--backup-dir', type=str, default='/content/gdrive/My Drive/yolov9_raw_backup', help='Where to backup training result')
 
     return parser.parse_known_args()[0] if known else parser.parse_args()
 
