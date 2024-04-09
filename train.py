@@ -135,7 +135,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         k, v = k_v
         if any(x in k for x in set_zero):
             LOGGER.info(f'Reset parameters (set zero): {layer_index} {k}')
-            v.reset_parameters()
+            v.data*=0
     
     # Backup mechanism
     backup_driver = RawBackup(backup_dir, max_backup_count=2)
